@@ -3,6 +3,7 @@ import random
 import time
 import math
 import numpy as np
+from collections import deque
 
 pygame.mixer.pre_init(44100, -16, 1, 512)
 pygame.init()
@@ -20,6 +21,8 @@ TILE = MAZE_WIDTH // COLS
 
 switch_cooldown = 1.2
 TOTAL_TIME      = 80
+last_enemy_move_time = time.time()
+enemy_move_delay = 0.4
 
 WHITE   = (255, 255, 255)
 BLACK   = (0,   0,   0  )
@@ -93,6 +96,11 @@ exit_img   = pygame.transform.scale(pygame.image.load('assets/textures/exit.png'
 hud_font = pygame.font.SysFont(None, 28)
 font     = pygame.font.SysFont(None, 24)
 
+enemy_img = pygame.transform.scale(
+    pygame.image.load('assets/textures/enemy.png'),
+    (TILE - 10, TILE - 10)
+)
+
 
 #state fucntion
 maze = [[0]*COLS for _ in range(ROWS)]
@@ -102,6 +110,7 @@ for r in range(ROWS):
             maze[r][c] = 1
 
 player_pos = [0, 0]
+enemy_pos = [ROWS - 1, 0]
 
 clues = {
     (2, 3): "First clue: Look for the hidden code.",
@@ -116,6 +125,8 @@ code_input_active = False
 code_input_text   = ""
 code_message      = ""
 game_won          = False
+game_over = False
+game_over_message = ""
 
 graffiti_falling  = False
 graffiti_fall_pos = []
@@ -328,11 +339,98 @@ def move_player(key):
     elif key == pygame.K_LEFT  and c > 0      and maze[r][c-1] == 0: player_pos[1] -= 1
     elif key == pygame.K_RIGHT and c < COLS-1 and maze[r][c+1] == 0: player_pos[1] += 1
 
+#enemy
+def bfs(start, goal):
+    queue = deque([start])
+    visited = {tuple(start): None}
 
-#loop it
+    while queue:
+        current = queue.popleft()
+
+        if current == goal:
+            path = []
+            while current:
+                path.append(current)
+                current = visited[current]
+            return path[::-1]
+
+        r, c = current
+
+        for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+            nr, nc = r + dr, c + dc
+
+            if (
+                0 <= nr < ROWS and
+                0 <= nc < COLS and
+                maze[nr][nc] == 0 and
+                (nr, nc) not in visited
+            ):
+                visited[(nr, nc)] = current
+                queue.append((nr, nc))
+
+    return []
+
+def move_enemy():
+    global enemy_pos
+
+    path = bfs(tuple(enemy_pos), tuple(player_pos))
+
+    if len(path) > 1:
+        enemy_pos[0], enemy_pos[1] = path[1]
+        
+def draw_enemy():
+    # create glow surface
+    glow_size = 60
+    glow = pygame.Surface((glow_size, glow_size), pygame.SRCALPHA)
+
+    pygame.draw.circle(
+        glow,
+        (255, 0, 0, 70),   # red glow with transparency
+        (glow_size // 2, glow_size // 2),
+        glow_size // 2
+    )
+
+    # draw glow behind enemy
+    screen.blit(
+        glow,
+        (
+            enemy_pos[1]*TILE + (TILE - glow_size)//2,
+            my(enemy_pos[0]*TILE + (TILE - glow_size)//2)
+        )
+    )
+
+    # draw enemy sprite
+    screen.blit(
+        enemy_img,
+        (
+            enemy_pos[1]*TILE + (TILE - 50)//2,
+            my(enemy_pos[0]*TILE + (TILE - 50)//2)
+        )
+    )
+def restart_game():
+    global player_pos, enemy_pos
+    global clues_found, game_over, game_won
+    global start_time, code_input_active
+
+    player_pos[:] = [0, 0]
+    enemy_pos[:] = [ROWS - 1, 0]
+
+    clues_found.clear()
+
+    game_over = False
+    game_won = False
+
+    code_input_active = False
+
+    start_time = time.time()
+    
+    
+#main loop and all
 def main():
     global code_input_active, code_input_text, code_message
     global game_won, last_switch_time, flash_alpha
+    global last_enemy_move_time
+    global game_over, game_over_message
 
     clock   = pygame.time.Clock()
     running = True
@@ -359,18 +457,48 @@ def main():
             break
 
         # shuffle
-        if not game_won and current_time - last_switch_time > switch_cooldown:
+        if not game_won and not game_over and current_time - last_switch_time > switch_cooldown:
             switch_maze()
             last_switch_time = current_time
+            
+        # enemy AI movement (autonomous chasing)
+        if current_time - last_enemy_move_time > enemy_move_delay:
+            if not game_over:
+                move_enemy()
+            last_enemy_move_time = current_time
 
         #
         screen.fill(BLACK)
         draw_maze()
         draw_player()
+        draw_enemy()
         update_and_draw_particles()
+        
+        #collidsion
+        if enemy_pos == player_pos and not game_over:
+            snd_fail.play()
+            trigger_flash((255, 0, 0), 200)
+
+            game_over = True
+            game_over_message = "Caught by enemy! Press R to restart"
 
         hud_status = "Secret hole opened!  Escape now!" if game_won else ""
         draw_hud(remaining, len(clues_found), len(clues), hud_status)
+        
+        if game_over:
+            overlay = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT), pygame.SRCALPHA)
+            overlay.fill((0, 0, 0, 180))
+            screen.blit(overlay, (0, 0))
+
+            msg = hud_font.render(game_over_message, True, RED)
+
+            screen.blit(
+                msg,
+                (
+                    WINDOW_WIDTH//2 - msg.get_width()//2,
+                    HUD_HEIGHT + MAZE_HEIGHT//2
+                )
+            )
 
         if graffiti_falling:
             draw_graffiti()
@@ -412,16 +540,22 @@ def main():
                         if len(code_input_text) < 12:
                             code_input_text += event.unicode
                 else:
-                    if event.key == pygame.K_c and len(clues_found) == len(clues):
+                    if game_over and event.key == pygame.K_r:
+                        restart_game()
+
+                    elif event.key == pygame.K_c and len(clues_found) == len(clues):
                         code_input_active = True
                         code_input_text   = ""
                         code_message      = ""
-                    else:
+
+                    elif not game_over:
                         move_player(event.key)
                         check_clue()
+                        
 
         if code_input_active:
             draw_code_input()
+            
 
        
         if game_won and tuple(player_pos) == (ROWS-1, COLS-1):
@@ -440,6 +574,9 @@ def main():
 
         pygame.display.flip()
         clock.tick(60)
+        
+        
+        
 
     pygame.quit()
 
