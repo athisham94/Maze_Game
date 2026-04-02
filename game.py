@@ -5,11 +5,14 @@ import math
 import numpy as np
 from collections import deque
 
+
+#collection
+
 pygame.mixer.pre_init(44100, -16, 1, 512)
 pygame.init()
 pygame.mixer.init()
 
-#var used dont change, cna adjust switch and time, rest dont change
+#variables used dont change,  adjust switch and time, rest dont change
 HUD_HEIGHT    = 50
 MAZE_WIDTH    = 600
 MAZE_HEIGHT   = 600
